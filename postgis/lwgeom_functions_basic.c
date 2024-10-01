@@ -638,14 +638,11 @@ Datum LWGEOM_closestpoint(PG_FUNCTION_ARGS)
 }
 
 /**
-Returns the shortest 2d line between two geometries
+Returns the shortest 2d line between two geometries (internal function)
 */
-PG_FUNCTION_INFO_V1(LWGEOM_shortestline2d);
-Datum LWGEOM_shortestline2d(PG_FUNCTION_ARGS)
+GSERIALIZED *LWGEOM_shortestline2d_internal(GSERIALIZED *geom1, GSERIALIZED *geom2)
 {
 	GSERIALIZED *result;
-	GSERIALIZED *geom1 = PG_GETARG_GSERIALIZED_P(0);
-	GSERIALIZED *geom2 = PG_GETARG_GSERIALIZED_P(1);
 	LWGEOM *theline;
 	LWGEOM *lwgeom1 = lwgeom_from_gserialized(geom1);
 	LWGEOM *lwgeom2 = lwgeom_from_gserialized(geom2);
@@ -654,13 +651,26 @@ Datum LWGEOM_shortestline2d(PG_FUNCTION_ARGS)
 	theline = lwgeom_closest_line(lwgeom1, lwgeom2);
 
 	if (lwgeom_is_empty(theline))
-		PG_RETURN_NULL();
+		return NULL;
 
 	result = geometry_serialize(theline);
 	lwgeom_free(theline);
 	lwgeom_free(lwgeom1);
 	lwgeom_free(lwgeom2);
 
+	return result;
+}
+
+/**
+Returns the shortest 2d line between two geometries
+*/
+PG_FUNCTION_INFO_V1(LWGEOM_shortestline2d);
+Datum LWGEOM_shortestline2d(PG_FUNCTION_ARGS)
+{
+	GSERIALIZED *result;
+	GSERIALIZED *geom1 = PG_GETARG_GSERIALIZED_P(0);
+	GSERIALIZED *geom2 = PG_GETARG_GSERIALIZED_P(1);
+	result = LWGEOM_shortestline2d_internal(geom1, geom2);
 	PG_FREE_IF_COPY(geom1, 0);
 	PG_FREE_IF_COPY(geom2, 1);
 	PG_RETURN_POINTER(result);
@@ -694,6 +704,25 @@ Datum LWGEOM_longestline2d(PG_FUNCTION_ARGS)
 	PG_FREE_IF_COPY(geom2, 1);
 	PG_RETURN_POINTER(result);
 }
+
+/**
+ Minimum 2d distance between objects in geom1 and geom2 (internal function)
+ */
+double ST_Distance_internal(GSERIALIZED *geom1, GSERIALIZED *geom2)
+{
+	double mindist;
+	LWGEOM *lwgeom1 = lwgeom_from_gserialized(geom1);
+	LWGEOM *lwgeom2 = lwgeom_from_gserialized(geom2);
+	gserialized_error_if_srid_mismatch(geom1, geom2, __func__);
+
+	mindist = lwgeom_mindistance2d(lwgeom1, lwgeom2);
+
+	lwgeom_free(lwgeom1);
+	lwgeom_free(lwgeom2);
+
+	return mindist;
+}
+
 /**
  Minimum 2d distance between objects in geom1 and geom2.
  */
@@ -703,14 +732,7 @@ Datum ST_Distance(PG_FUNCTION_ARGS)
 	double mindist;
 	GSERIALIZED *geom1 = PG_GETARG_GSERIALIZED_P(0);
 	GSERIALIZED *geom2 = PG_GETARG_GSERIALIZED_P(1);
-	LWGEOM *lwgeom1 = lwgeom_from_gserialized(geom1);
-	LWGEOM *lwgeom2 = lwgeom_from_gserialized(geom2);
-	gserialized_error_if_srid_mismatch(geom1, geom2, __func__);
-
-	mindist = lwgeom_mindistance2d(lwgeom1, lwgeom2);
-
-	lwgeom_free(lwgeom1);
-	lwgeom_free(lwgeom2);
+	mindist = ST_Distance_internal(geom1, geom2);
 
 	PG_FREE_IF_COPY(geom1, 0);
 	PG_FREE_IF_COPY(geom2, 1);
@@ -725,6 +747,30 @@ Datum ST_Distance(PG_FUNCTION_ARGS)
 /**
 Returns boolean describing if
 mininimum 2d distance between objects in
+geom1 and geom2 is shorter than tolerance (internal function)
+*/
+bool LWGEOM_dwithin_internal(GSERIALIZED *geom1, GSERIALIZED *geom2, double tolerance)
+{
+	assert(tolerance >= 0);
+	assert(gserialized_get_srid(geom1) == gserialized_get_srid(geom2));
+
+	double mindist;
+	LWGEOM *lwgeom1 = lwgeom_from_gserialized(geom1);
+	LWGEOM *lwgeom2 = lwgeom_from_gserialized(geom2);
+
+	if (lwgeom_is_empty(lwgeom1) || lwgeom_is_empty(lwgeom2))
+	{
+		return false;
+	}
+
+	mindist = lwgeom_mindistance2d_tolerance(lwgeom1, lwgeom2, tolerance);
+
+	return (tolerance >= mindist);
+}
+
+/**
+Returns boolean describing if
+mininimum 2d distance between objects in
 geom1 and geom2 is shorter than tolerance
 */
 PG_FUNCTION_INFO_V1(LWGEOM_dwithin);
@@ -734,8 +780,6 @@ Datum LWGEOM_dwithin(PG_FUNCTION_ARGS)
 	GSERIALIZED *geom1 = PG_GETARG_GSERIALIZED_P(0);
 	GSERIALIZED *geom2 = PG_GETARG_GSERIALIZED_P(1);
 	double tolerance = PG_GETARG_FLOAT8(2);
-	LWGEOM *lwgeom1 = lwgeom_from_gserialized(geom1);
-	LWGEOM *lwgeom2 = lwgeom_from_gserialized(geom2);
 
 	if (tolerance < 0)
 	{
@@ -745,12 +789,7 @@ Datum LWGEOM_dwithin(PG_FUNCTION_ARGS)
 
 	gserialized_error_if_srid_mismatch(geom1, geom2, __func__);
 
-	if (lwgeom_is_empty(lwgeom1) || lwgeom_is_empty(lwgeom2))
-	{
-		PG_RETURN_BOOL(false);
-	}
-
-	mindist = lwgeom_mindistance2d_tolerance(lwgeom1, lwgeom2, tolerance);
+	mindist = LWGEOM_dwithin_internal(geom1, geom2, tolerance);
 
 	PG_FREE_IF_COPY(geom1, 0);
 	PG_FREE_IF_COPY(geom2, 1);
